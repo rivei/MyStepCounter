@@ -21,19 +21,6 @@ public class StepSensorActivity extends AppCompatActivity {
     public static final String TAG = "StepSensorActivity";
 
     final StepSensorActivity self = this;
-    // Actions from REGISTER cards
-    public static final int ACTION_REGISTER_DETECT_NOBATCHING = 10;
-    public static final int ACTION_REGISTER_DETECT_BATCHING_5s = 11;
-    public static final int ACTION_REGISTER_DETECT_BATCHING_10s = 12;
-    public static final int ACTION_REGISTER_COUNT_NOBATCHING = 21;
-    public static final int ACTION_REGISTER_COUNT_BATCHING_5s = 22;
-    public static final int ACTION_REGISTER_COUNT_BATCHING_10s = 23;
-    // Action from COUNTING card
-    public static final int ACTION_UNREGISTER = 1;
-    // Actions from description cards
-    private static final int ACTION_BATCHING_DESCRIPTION_DISMISS = 2;
-    private static final int ACTION_EXPLANATION_DISMISS = 3;
-
     // State of application, used to register for sensors when app is restored
     public static final int STATE_OTHER = 0;
     public static final int STATE_COUNTER = 1;
@@ -72,6 +59,7 @@ public class StepSensorActivity extends AppCompatActivity {
     private int mSteps = 0;
     // Value of the step counter sensor when the listener was registered.
     // (Total steps are calculated from this value.)
+    private int mSteps2 = 0;
     private int mCounterSteps = 0;
     // Steps counted by the step counter previously. Used to keep counter consistent across rotation
     // changes
@@ -109,7 +97,10 @@ public class StepSensorActivity extends AppCompatActivity {
                 start.setVisibility(View.GONE);
                 stop.setVisibility(View.VISIBLE);
 
+                //try to listen to 2 sensor together?
                 registerEventListener(BATCH_LATENCY, Sensor.TYPE_STEP_COUNTER);
+                registerEventListener(BATCH_LATENCY, Sensor.TYPE_STEP_DETECTOR);
+
             }
         });
 
@@ -118,7 +109,7 @@ public class StepSensorActivity extends AppCompatActivity {
             public void onClick(View view) {
 
                 unregisterListeners();
-                mStepText.setText(String.format("Total step: %d ", mSteps));
+                mStepText.setText(String.format("Total step: %d ;Total step2: %d", mSteps, mSteps2));
 
                 TimeBuff += MillisecondTime;
                 handler.removeCallbacks(runnable);
@@ -300,6 +291,7 @@ public class StepSensorActivity extends AppCompatActivity {
     private void resetCounter() {
         // BEGIN_INCLUDE(reset)
         mSteps = 0;
+        mSteps2 = 0;
         mCounterSteps = 0;
         mEventLength = 0;
         mEventDelays = new float[EVENT_QUEUE_LENGTH];
@@ -319,11 +311,11 @@ public class StepSensorActivity extends AppCompatActivity {
             recordDelay(event);
             final String delayString = getDelayString();
 
-/*            if (event.sensor.getType() == Sensor.TYPE_STEP_DETECTOR) {
+            if (event.sensor.getType() == Sensor.TYPE_STEP_DETECTOR) {
                 // A step detector event is received for each step.
                 // This means we need to count steps ourselves
 
-                mSteps += event.values.length;
+                mSteps2 += event.values.length;
 
                 //Update the card with the latest step count
 //                getCardStream().getCard(CARD_COUNTING)
@@ -333,7 +325,7 @@ public class StepSensorActivity extends AppCompatActivity {
                 Log.i(TAG,
                         "New step detected by STEP_DETECTOR sensor. Total step count: " + mSteps);
 
-            } else if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {*/
+            } else if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {
 
                 /*
                 A step counter event contains the total number of steps since the listener
@@ -362,7 +354,7 @@ public class StepSensorActivity extends AppCompatActivity {
                 Log.e(TAG, "New step detected by STEP_COUNTER sensor. Total step count: " + mSteps);
                 Log.e(TAG, "Counter step: " + mCounterSteps);
             // END_INCLUDE(sensorevent)
- //           }
+            }
         }
 
         @Override
