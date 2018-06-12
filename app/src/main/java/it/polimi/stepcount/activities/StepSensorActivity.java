@@ -1,12 +1,20 @@
-package it.polimi.stepcount;
+package it.polimi.stepcount.activities;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.location.Location;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.SystemClock;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
@@ -16,9 +24,20 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
-public class StepSensorActivity extends AppCompatActivity {
+import java.util.Calendar;
 
-    public static final String TAG = "StepSensorActivity";
+import it.polimi.stepcount.Dao.DaoWalkingSession;
+import it.polimi.stepcount.R;
+import it.polimi.stepcount.SessionRecyclerAdapter;
+import it.polimi.stepcount.models.WalkingSession;
+import it.polimi.stepcount.services.LocationUpdatesService;
+import it.polimi.stepcount.services.StepCountForegroundService;
+import it.polimi.stepcount.services.Utils;
+
+public class StepSensorActivity extends AppCompatActivity implements
+        SharedPreferences.OnSharedPreferenceChangeListener {
+
+    public static final String TAG = StepSensorActivity.class.getSimpleName();
 
     final StepSensorActivity self = this;
     // State of application, used to register for sensors when app is restored
@@ -35,10 +54,12 @@ public class StepSensorActivity extends AppCompatActivity {
     private static final int BATCH_LATENCY = 5000000; //5s of delay
 
     TextView textView, mStepText ;
-    Button start,stop,reset,save;
+    Button start,stop,reset,save,preview;
     long MillisecondTime, StartTime, TimeBuff, UpdateTime = 0L ;
     int Seconds, Minutes, MilliSeconds, walking_duration;
     Handler handler;
+
+    private WalkingSession curWalkingSession = new WalkingSession();
 
     /*
     For illustration we keep track of the last few events and show their delay from when the
@@ -69,18 +90,52 @@ public class StepSensorActivity extends AppCompatActivity {
     // When a listener is registered, the batch sensor delay in microseconds
     private int mMaxDelay = 0;
 
+    private StepCountForegroundService mService = null;
+    // Tracks the bound state of the service.
+    private boolean mBound = false;
+
+    // Monitors the state of the connection to the service.
+    private final ServiceConnection mServiceConnection = new ServiceConnection() {
+
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            StepCountForegroundService.MyBinder binder = (StepCountForegroundService.MyBinder) service;
+            mService = binder.getService();
+            mBound = true;
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            mService = null;
+            mBound = false;
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_step_sensor);
-        textView = (TextView)findViewById(R.id.textView);
-        mStepText = (TextView)findViewById(R.id.stepsText);
-        start = (Button)findViewById(R.id.button_start);
-        stop = (Button)findViewById(R.id.button_stop);
-        reset = (Button)findViewById(R.id.button_reset);
+
+
+/*        // Check that the user hasn't revoked permissions by going to Settings.
+        if (Utils.requestingLocationUpdates(this)) {
+            if (!checkPermissions()) {
+                requestPermissions();
+            }
+        }*/
+    }
+
+    @Override
+    protected void onStart(){
+        super.onStart();
+        textView = (TextView) findViewById(R.id.textView);
+        mStepText = (TextView) findViewById(R.id.stepsText);
+        start = (Button) findViewById(R.id.button_start);
+        stop = (Button) findViewById(R.id.button_stop);
+        reset = (Button) findViewById(R.id.button_reset);
         save = (Button) findViewById(R.id.button_save);
-        handler = new Handler() ;
+        preview = (Button) findViewById(R.id.button_preview);
+        handler = new Handler();
         stop.setVisibility(View.GONE);
         start.setVisibility(View.VISIBLE);
         save.setEnabled(false);
@@ -94,13 +149,19 @@ public class StepSensorActivity extends AppCompatActivity {
                 handler.postDelayed(runnable, 0);
                 reset.setEnabled(false);
                 save.setEnabled(false);
+                preview.setEnabled(false);
                 start.setVisibility(View.GONE);
                 stop.setVisibility(View.VISIBLE);
 
+                //mService
                 //try to listen to 2 sensor together?
                 registerEventListener(BATCH_LATENCY, Sensor.TYPE_STEP_COUNTER);
                 registerEventListener(BATCH_LATENCY, Sensor.TYPE_STEP_DETECTOR);
 
+                curWalkingSession.setmStartTime(Calendar.getInstance().getTimeInMillis());
+                Intent intent = new Intent(StepSensorActivity.this, StepCountForegroundService.class);
+                intent.setAction(StepCountForegroundService.ACTION_START_FOREGROUND_SERVICE);
+                startService(intent);
             }
         });
 
@@ -109,20 +170,43 @@ public class StepSensorActivity extends AppCompatActivity {
             public void onClick(View view) {
 
                 unregisterListeners();
-                mStepText.setText(String.format("Total step: %d ;Total step2: %d", mSteps, mSteps2));
+                curWalkingSession.setmEndTime(Calendar.getInstance().getTimeInMillis());
+                curWalkingSession.setmStepCount(mSteps);
+                long temp = curWalkingSession.getmEndTime() - curWalkingSession.getmStartTime();
+                String str;
+                str = "session duration:" + String.valueOf(temp);
+                curWalkingSession.setmDuration(temp);
+                Log.e(TAG,str);
+                //TODO: calculate when GPS available
+                curWalkingSession.setmDistance(0);
+                curWalkingSession.setmAverageSpeed(0);
+
+                mStepText.setText(String.format("Step count: %d ;Step detected: %d", mSteps, mSteps2));
 
                 TimeBuff += MillisecondTime;
                 handler.removeCallbacks(runnable);
                 reset.setEnabled(true);
                 save.setEnabled(true);
+                preview.setEnabled(false);
                 stop.setVisibility(View.GONE);
                 start.setVisibility(View.VISIBLE);
+
+                Intent intent = new Intent(StepSensorActivity.this, StepCountForegroundService.class);
+                intent.setAction(StepCountForegroundService.ACTION_STOP_FOREGROUND_SERVICE);
+                startService(intent);
+
             }
         });
         reset.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 resetCounter();
+                reset.setEnabled(false);
+                save.setEnabled(false);
+                preview.setEnabled(true);
+                stop.setVisibility(View.GONE);
+                start.setVisibility(View.VISIBLE);
+
                 mStepText.setText(String.format("Total step: 0 "));
                 MillisecondTime = 0L ;
                 StartTime = 0L ;
@@ -131,21 +215,29 @@ public class StepSensorActivity extends AppCompatActivity {
                 Seconds = 0 ;
                 Minutes = 0 ;
                 MilliSeconds = 0 ;
-                textView.setText("00:00:00");
+                textView.setText("00:00");
                 reset.setEnabled(false);
-
+                //TODO: if the no reset is done, the start time and step count should continue!
             }
         });
 
         save.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
+                reset.setEnabled(true);
+                save.setEnabled(false);
+                preview.setEnabled(true);
 
-                walking_duration = Minutes*60+Seconds;
-           /*     schedule.setScore(walking_duration);
-                writeDatabase();
-                Toast.makeText(WalkingActivity.this, "Walking Speed Successfully saved", Toast.LENGTH_SHORT).show();
-*/
+                saveToDB(self,curWalkingSession);
+                Toast.makeText(self , "Walking Session Successfully saved", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        preview.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent intent = new Intent(self, SessionListActivity.class);
+                startActivity(intent);
             }
         });
     }
@@ -167,8 +259,8 @@ public class StepSensorActivity extends AppCompatActivity {
             MilliSeconds = (int) (UpdateTime % 1000)/10;
 
             textView.setText("" + Minutes + ":"
-                    + String.format("%02d", Seconds)+":"
-                    + String.format("%02d", MilliSeconds));
+                    + String.format("%02d", Seconds));//+":"
+                    //+ String.format("%02d", MilliSeconds));
 
             handler.postDelayed(this, 0);
         }
@@ -433,20 +525,49 @@ public class StepSensorActivity extends AppCompatActivity {
     public void onResume() {
         super.onResume();
 
-/*        CardStreamFragment stream = getCardStream();
-        if (stream.getVisibleCardCount() < 1) {
-            // No cards are visible, started for the first time
-            // Prepare all cards and show the intro card.
-            initialiseCards();
-            showIntroCard();
-            // Show the registration card if the hardware is supported, show an error otherwise
-            if (isKitkatWithStepSensor()) {
-                showRegisterCard();
-            } else {
-                showErrorCard();
-            }
-        }*/
     }
 
+
+    @Override
+    public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
+        // Update the buttons state depending on whether location updates are being requested.
+        if (key.equals(Utils.KEY_REQUESTING_LOCATION_UPDATES)) {
+//            setButtonsState(sharedPreferences.getBoolean(Utils.KEY_REQUESTING_LOCATION_UPDATES,
+//                    false));
+        }
+    }
+
+/*    private void setButtonsState(boolean requestingLocationUpdates) {
+        if (requestingLocationUpdates) {
+            mRequestLocationUpdatesButton.setEnabled(false);
+            mRemoveLocationUpdatesButton.setEnabled(true);
+        } else {
+            mRequestLocationUpdatesButton.setEnabled(true);
+            mRemoveLocationUpdatesButton.setEnabled(false);
+        }
+    }*/
+
+    /**
+     * Receiver for broadcasts sent by {@link LocationUpdatesService}.
+     */
+    private class MyReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            Location location = intent.getParcelableExtra(LocationUpdatesService.EXTRA_LOCATION);
+            if (location != null) {
+                Toast.makeText(StepSensorActivity.this, Utils.getLocationText(location),
+                        Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    public void saveToDB(Context context, WalkingSession walkingSession){
+        DaoWalkingSession daoWalkingSession = new DaoWalkingSession(context);
+        try {
+            daoWalkingSession.storeWalkingSession(walkingSession);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
 
 }
